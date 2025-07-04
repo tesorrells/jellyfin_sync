@@ -7,21 +7,25 @@ import json
 import subprocess
 import threading
 from pathlib import Path
-from typing import Dict
+from typing import Dict, Optional
+import time
 
-from .config import WEBTORRENT_BIN
+from .config import WEBTORRENT_BIN, WAIT_SEED_TIMEOUT
 
 
 class SeedProcess:
     """Track a single webtorrent-cli seed."""
 
-    def __init__(self, path: Path, magnet: str, proc: subprocess.Popen):
+    def __init__(self, path: Path, proc: subprocess.Popen):
         self.path = path
-        self.magnet = magnet
+        self.magnet: Optional[str] = None
         self.proc = proc
 
     def is_alive(self) -> bool:
         return self.proc.poll() is None
+
+    def set_magnet(self, uri: str) -> None:
+        self.magnet = uri
 
 
 class SeedManager:
@@ -36,7 +40,7 @@ class SeedManager:
         path = path.expanduser().resolve()
         with self._lock:
             if path in self._seeds and self._seeds[path].is_alive():
-                return self._seeds[path].magnet
+                return self._seeds[path].magnet or "pending"
 
             cmd = [
                 WEBTORRENT_BIN,
@@ -44,7 +48,6 @@ class SeedManager:
                 str(path),
                 "--json",
                 "--keep-seeding",
-                "--quiet",
             ]
             proc = subprocess.Popen(
                 cmd,
@@ -52,14 +55,36 @@ class SeedManager:
                 stderr=subprocess.PIPE,
                 text=True,
             )
-            # Read first line of stdout for JSON metadata
-            line = proc.stdout.readline() if proc.stdout else ""
-            try:
-                info = json.loads(line)
-                magnet = info["torrent"]["magnetURI"]
-            except Exception as exc:  # noqa: BLE001
+            # Wait for JSON metadata line (webtorrent prints exactly one JSON line)
+            magnet: str | None = None
+            if proc.stdout:
+                iterations = int(WAIT_SEED_TIMEOUT / 0.2)
+                for _ in range(iterations):
+                    line = proc.stdout.readline() or (proc.stderr.readline() if proc.stderr else "")
+                    if not line:
+                        time.sleep(0.2)
+                        continue
+
+                    stripped = line.strip()
+
+                    # 1. Attempt JSON parse
+                    try:
+                        info = json.loads(stripped)
+                        magnet = info["torrent"]["magnetURI"]
+                        break
+                    except json.JSONDecodeError:
+                        pass  # not JSON
+
+                    # 2. Fallback: look for a raw magnet URI line
+                    if stripped.startswith("magnet:?xt=urn:btih:"):
+                        magnet = stripped
+                        break
+
+            if not magnet:
                 proc.kill()
-                raise RuntimeError(f"Failed to start seed: {exc}\nOutput: {line}") from exc
+                raise RuntimeError(
+                    "webtorrent did not emit JSON metadata within timeout. Is webtorrent-cli installed ≥0.115?"
+                )
 
             self._seeds[path] = SeedProcess(path, magnet, proc)
             return magnet

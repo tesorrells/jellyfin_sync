@@ -6,6 +6,8 @@ from pathlib import Path
 from typing import Any
 
 from flask import Flask, abort, jsonify, request, send_from_directory
+import threading
+import logging
 
 from .seed_manager import seed_manager
 
@@ -13,6 +15,8 @@ MANIFEST_DIR = Path(os.environ.get("MANIFEST_DIR", "manifests"))
 MANIFEST_DIR.mkdir(parents=True, exist_ok=True)
 
 app = Flask(__name__)
+
+logger = logging.getLogger(__name__)
 
 
 # ---------- helpers -----------------------------------------------------------
@@ -75,37 +79,52 @@ def seed_file():  # noqa: ANN001
     if not source.exists():
         abort(404, description="Source path does not exist")
 
-    # Start / reuse seed
-    try:
-        magnet = seed_manager.seed(source)
-    except RuntimeError as exc:
-        abort(500, description=str(exc))
+    # If already seeding we might already have a magnet
+    current = seed_manager.active_seeds().get(str(source))
 
-    # Update manifest file
-    path = _manifest_path(group)
-    if path.exists():
-        with path.open() as fh:
-            manifest_data = json.load(fh)
+    if current and current != "pending":
+        magnet = current
+        status_code = 201
     else:
-        manifest_data = {"group": group, "items": []}
+        magnet = None
+        status_code = 202
 
-    # Prevent duplicates
-    for item in manifest_data["items"]:
-        if item.get("torrent") == magnet:
-            break
-    else:
-        manifest_data["items"].append(
-            {
-                "title": title,
-                "torrent": magnet,
-                "path": dest_path,
-            }
-        )
+        def _seed_task() -> None:
+            try:
+                m = seed_manager.seed(source)
+                if not m:
+                    return  # still pending; magnet thread will eventually set it
 
-    with path.open("w") as fh:
-        json.dump(manifest_data, fh, indent=2)
+                # Update manifest once magnet available
+                path = _manifest_path(group)
+                if path.exists():
+                    with path.open() as fh:
+                        manifest_data = json.load(fh)
+                else:
+                    manifest_data = {"group": group, "items": []}
 
-    return jsonify({"status": "seeding", "magnet": magnet, "group": group}), 201
+                for item in manifest_data["items"]:
+                    if item.get("torrent") == m:
+                        break
+                else:
+                    manifest_data["items"].append(
+                        {
+                            "title": title,
+                            "torrent": m,
+                            "path": dest_path,
+                        }
+                    )
+
+                with path.open("w") as fh:
+                    json.dump(manifest_data, fh, indent=2)
+
+                logger.info("Seed ready %s", m)
+            except Exception as exc:  # noqa: BLE001
+                logger.error("Seed task failed for %s: %s", source, exc)
+
+        threading.Thread(target=_seed_task, daemon=True).start()
+
+    return jsonify({"status": "seeding", "magnet": magnet, "group": group}), status_code
 
 
 @app.route("/seeds", methods=["GET"])
