@@ -89,40 +89,31 @@ def seed_file():  # noqa: ANN001
         magnet = None
         status_code = 202
 
-        def _seed_task() -> None:
+        def on_ready(magnet_uri: str) -> None:
             try:
-                m = seed_manager.seed(source)
-                if not m:
-                    return  # still pending; magnet thread will eventually set it
-
-                # Update manifest once magnet available
-                path = _manifest_path(group)
-                if path.exists():
-                    with path.open() as fh:
+                path_file = _manifest_path(group)
+                if path_file.exists():
+                    with path_file.open() as fh:
                         manifest_data = json.load(fh)
                 else:
                     manifest_data = {"group": group, "items": []}
 
-                for item in manifest_data["items"]:
-                    if item.get("torrent") == m:
-                        break
-                else:
-                    manifest_data["items"].append(
-                        {
-                            "title": title,
-                            "torrent": m,
-                            "path": dest_path,
-                        }
-                    )
+                if all(item.get("torrent") != magnet_uri for item in manifest_data["items"]):
+                    manifest_data["items"].append({
+                        "title": title,
+                        "torrent": magnet_uri,
+                        "path": dest_path,
+                    })
 
-                with path.open("w") as fh:
+                with path_file.open("w") as fh:
                     json.dump(manifest_data, fh, indent=2)
 
-                logger.info("Seed ready %s", m)
+                logger.info("Seed ready %s", magnet_uri)
             except Exception as exc:  # noqa: BLE001
-                logger.error("Seed task failed for %s: %s", source, exc)
+                logger.error("Manifest update failed: %s", exc)
 
-        threading.Thread(target=_seed_task, daemon=True).start()
+        # Kick off seeding in background
+        threading.Thread(target=seed_manager.seed, args=(source, on_ready), daemon=True).start()
 
     return jsonify({"status": "seeding", "magnet": magnet, "group": group}), status_code
 

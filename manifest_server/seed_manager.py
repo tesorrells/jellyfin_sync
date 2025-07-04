@@ -7,7 +7,7 @@ import json
 import subprocess
 import threading
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, Optional, Callable
 import time
 
 from .config import WEBTORRENT_BIN, WAIT_SEED_TIMEOUT
@@ -35,8 +35,9 @@ class SeedManager:
         self._seeds: Dict[Path, SeedProcess] = {}
         self._lock = threading.Lock()
 
-    def seed(self, path: Path) -> str:
-        """Start seeding *path*; return magnet URI (existing seed reused)."""
+    def seed(self, path: Path, on_magnet: Optional[Callable[[str], None]] = None) -> str:
+        """Start seeding *path*; return magnet URI (existing seed reused).
+        If *on_magnet* is provided it will be called once the magnet URI is known."""
         path = path.expanduser().resolve()
         with self._lock:
             if path in self._seeds and self._seeds[path].is_alive():
@@ -86,13 +87,48 @@ class SeedManager:
                     "webtorrent did not emit JSON metadata within timeout. Is webtorrent-cli installed ≥0.115?"
                 )
 
-            self._seeds[path] = SeedProcess(path, magnet, proc)
-            return magnet
+            sp = SeedProcess(path, proc)
+            self._seeds[path] = sp
+            threading.Thread(target=self._collect_magnet, args=(sp, on_magnet), daemon=True).start()
+            return None
 
     def active_seeds(self) -> Dict[str, str]:
         """Return mapping path->magnet for running seeds."""
         with self._lock:
-            return {str(p): sp.magnet for p, sp in self._seeds.items() if sp.is_alive()}
+            return {str(p): sp.magnet or "pending" for p, sp in self._seeds.items()}
+
+    def _collect_magnet(self, sp: "SeedProcess", cb: Optional[Callable[[str], None]]) -> None:
+        """Read process output until magnet URI obtained or process exits.
+        Calls *cb* when magnet becomes available."""
+        # Wait for JSON metadata line (webtorrent prints exactly one JSON line)
+        if sp.proc.stdout:
+            iterations = int(WAIT_SEED_TIMEOUT / 0.2)
+            for _ in range(iterations):
+                line = sp.proc.stdout.readline() or (sp.proc.stderr.readline() if sp.proc.stderr else "")
+                if not line:
+                    time.sleep(0.2)
+                    continue
+
+                stripped = line.strip()
+
+                # 1. Attempt JSON parse
+                try:
+                    info = json.loads(stripped)
+                    uri = info["torrent"]["magnetURI"]
+                    sp.set_magnet(uri)
+                    if cb:
+                        cb(uri)
+                    return
+                except json.JSONDecodeError:
+                    pass  # not JSON
+
+                # 2. Fallback: look for a raw magnet URI line
+                if stripped.startswith("magnet:?xt=urn:btih:"):
+                    uri = stripped
+                    sp.set_magnet(uri)
+                    if cb:
+                        cb(uri)
+                    return
 
 
 # Global instance
