@@ -130,6 +130,37 @@ sudo systemctl start autosync.service
 
 ---
 
+## Adding content & seeding (all inside the Manifest Server)
+
+1. Copy or move the file(s) you want to share onto the curator node.
+2. Start (or keep running) the Manifest Server:
+
+```bash
+python -m manifest_server.app --host 0.0.0.0
+```
+
+3. Seed and add to a manifest with a single HTTP call:
+
+```bash
+curl -X POST http://<CURATOR_IP>:5000/seed \
+     -H "Content-Type: application/json" \
+     -d '{
+           "path": "/home/user/Movies/YourClip.mp4",
+           "group": "family",
+           "dest_path": "YourClip/YourClip.mp4",
+           "title": "Your Clip (2023)"
+         }'
+```
+
+The server will:
+• Spawn `webtorrent seed` in the background and keep it alive.  
+• Return the `magnet:` URI used.  
+• Automatically append a new item to `manifests/family.json` (creating the file if needed).
+
+4. Laptop/boxes running the Auto-Sync daemon will pick up the new item on their next cycle and download it.
+
+---
+
 ## Contribution guidelines
 
 - Keep files ≤ 300 lines; factor out helpers when needed.
