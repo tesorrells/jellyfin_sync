@@ -37,9 +37,15 @@ Both pieces are intentionally simple so that non-technical users can deploy them
 ## Prerequisites
 
 1. **Python** 3.9 or newer
-2. **Node.js** 20 (or any recent LTS) – required only for the `webtorrent-cli` binary
+2. **webtorrent-cli** on any machine that seeds or downloads. Two options:  
+   • **Node build (recommended)** – fast hashing & JSON output:
+   ```bash
+   npm install -g webtorrent-cli
+   ```
+   • **Go build (apt package)** – available on Debian/Ubuntu (`sudo apt install webtorrent`). Works but hashes large files slower and lacks `--json` support.
 3. **Jellyfin** running on the same host as the Auto-Sync daemon
 4. **ffmpeg** – dependency of Jellyfin
+5. **Node.js** only if you choose the Node `webtorrent-cli` build.
 
 ### Debian / Ubuntu quick install
 
@@ -74,7 +80,14 @@ python -m manifest_server.app
 ```
 
 Visit `http://localhost:5000` to verify the Manifest Server is running.  
-When new torrents are added to the manifest file, the Auto-Sync daemon will fetch them on the next cycle.
+Key endpoints:
+
+- `GET /` – health check
+- `GET /manifest/<group>.json` – fetch manifest
+- `POST /seed` – seed a local file/dir & auto-update manifest (see below)
+- `GET /seeds` – list active/pending seeds
+
+When the manifest changes, Auto-Sync daemons will pick it up on their next cycle.
 
 ---
 
@@ -157,7 +170,32 @@ The server will:
 • Return the `magnet:` URI used.  
 • Automatically append a new item to `manifests/family.json` (creating the file if needed).
 
-4. Laptop/boxes running the Auto-Sync daemon will pick up the new item on their next cycle and download it.
+4. Laptops / Pi boxes running the Auto-Sync daemon will pick up the new item on their next poll and start downloading.
+
+---
+
+## Client configuration
+
+Each downloader needs to know where its manifest lives. Edit `.env` on the client:
+
+```ini
+# .env on client
+MANIFEST_URL=http://<CURATOR_IP>:5000/manifest/family.json
+GROUP=family
+DOWNLOAD_DIR=~/Videos/synced
+
+# (optional) trigger Jellyfin rescan after download
+JELLYFIN_URL=http://localhost:8096
+JELLYFIN_API_KEY=<API_KEY>
+```
+
+Run once to test:
+
+```bash
+python -m autosync.daemon --once
+```
+
+Then run continuously (systemd or screen) – new content will appear automatically.
 
 ---
 
