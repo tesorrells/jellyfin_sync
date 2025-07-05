@@ -43,54 +43,22 @@ class SeedManager:
             if path in self._seeds and self._seeds[path].is_alive():
                 return self._seeds[path].magnet or "pending"
 
-            cmd = [
-                WEBTORRENT_BIN,
-                "seed",
-                str(path),
-                "--json",
-                "--keep-seeding",
-            ]
+            # Use minimal flags: Go build doesn't recognise --keep-seeding
+            cmd = [WEBTORRENT_BIN, "seed", str(path)]
             proc = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
             )
-            # Wait for JSON metadata line (webtorrent prints exactly one JSON line)
-            magnet: str | None = None
-            if proc.stdout:
-                iterations = int(WAIT_SEED_TIMEOUT / 0.2)
-                for _ in range(iterations):
-                    line = proc.stdout.readline() or (proc.stderr.readline() if proc.stderr else "")
-                    if not line:
-                        time.sleep(0.2)
-                        continue
-
-                    stripped = line.strip()
-
-                    # 1. Attempt JSON parse
-                    try:
-                        info = json.loads(stripped)
-                        magnet = info["torrent"]["magnetURI"]
-                        break
-                    except json.JSONDecodeError:
-                        pass  # not JSON
-
-                    # 2. Fallback: look for a raw magnet URI line
-                    if stripped.startswith("magnet:?xt=urn:btih:"):
-                        magnet = stripped
-                        break
-
-            if not magnet:
-                proc.kill()
-                raise RuntimeError(
-                    "webtorrent did not emit JSON metadata within timeout. Is webtorrent-cli installed ≥0.115?"
-                )
 
             sp = SeedProcess(path, proc)
             self._seeds[path] = sp
+
+            # Magnet capture happens asynchronously; no blocking here.
             threading.Thread(target=self._collect_magnet, args=(sp, on_magnet), daemon=True).start()
-            return None
+
+            return None  # magnet pending
 
     def active_seeds(self) -> Dict[str, str]:
         """Return mapping path->magnet for running seeds."""
@@ -111,7 +79,7 @@ class SeedManager:
 
                 stripped = line.strip()
 
-                # 1. Attempt JSON parse
+                # 1. Attempt JSON parse (Node build)
                 try:
                     info = json.loads(stripped)
                     uri = info["torrent"]["magnetURI"]
@@ -122,13 +90,18 @@ class SeedManager:
                 except json.JSONDecodeError:
                     pass  # not JSON
 
-                # 2. Fallback: look for a raw magnet URI line
-                if stripped.startswith("magnet:?xt=urn:btih:"):
-                    uri = stripped
+                # 2. Fallback: look for magnet URI substring (Go build prints "Magnet: ...")
+                idx = stripped.find("magnet:?xt=urn:btih:")
+                if idx != -1:
+                    uri = stripped[idx:]
                     sp.set_magnet(uri)
                     if cb:
                         cb(uri)
                     return
+
+            # If loop finishes without capturing magnet, mark as failed
+            if cb:
+                cb("error")
 
 
 # Global instance
