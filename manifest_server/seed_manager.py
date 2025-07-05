@@ -40,8 +40,12 @@ class SeedManager:
         If *on_magnet* is provided it will be called once the magnet URI is known."""
         path = path.expanduser().resolve()
         with self._lock:
-            if path in self._seeds and self._seeds[path].is_alive():
-                return self._seeds[path].magnet or "pending"
+            if path in self._seeds:
+                sp_cached = self._seeds[path]
+                if sp_cached.is_alive():
+                    return sp_cached.magnet or "pending"
+                # Dead process → remove and start again
+                del self._seeds[path]
 
             # Use minimal flags: Go build doesn't recognise --keep-seeding
             cmd = [WEBTORRENT_BIN, "seed", str(path)]

@@ -10,9 +10,7 @@ import threading
 import logging
 
 from .seed_manager import seed_manager
-
-MANIFEST_DIR = Path(os.environ.get("MANIFEST_DIR", "manifests"))
-MANIFEST_DIR.mkdir(parents=True, exist_ok=True)
+from .config import MANIFEST_DIR
 
 app = Flask(__name__)
 

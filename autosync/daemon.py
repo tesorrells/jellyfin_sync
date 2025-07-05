@@ -83,17 +83,27 @@ def download_torrent(magnet_uri: str) -> None:
         magnet_uri,
         "--out",
         str(config.DOWNLOAD_DIR),
-        "--quiet",
-        "--timeout",
-        "600",
-        "--recheck",
     ]
-    try:
-        subprocess.run(cmd, check=True)
+
+    # Launch `webtorrent` and stream its stdout so we get live progress
+    process = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+    )
+
+    assert process.stdout is not None  # for mypy
+    for line in process.stdout:
+        logger.info("[Torrent] %s", line.rstrip())
+
+    ret = process.wait()
+    if ret == 0:
         logger.info("[Torrent] Download completed")
-    except subprocess.CalledProcessError as exc:
-        logger.error("[Torrent] webtorrent exited with code %s", exc.returncode)
-        raise
+    else:
+        logger.error("[Torrent] webtorrent exited with code %s", ret)
+        raise subprocess.CalledProcessError(ret, cmd)
 
 
 # ---------- Manifest processing ----------------------------------------------
